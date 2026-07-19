@@ -68,6 +68,8 @@ class TrunkUowTests(unittest.TestCase):
             self.git(repo, "config", "user.email", "trunk-test@example.invalid")
             subprocess.run(["git", "init", "--bare", str(remote)], check=True,
                            capture_output=True)
+            subprocess.run(["git", "symbolic-ref", "HEAD", "refs/heads/main"],
+                           cwd=remote, check=True, capture_output=True)
             goals = repo / "docs" / "goals"
             goals.mkdir(parents=True)
             source_goals = TOOL.parent.parent / "docs" / "goals"
