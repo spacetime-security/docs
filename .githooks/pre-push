@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  case "$remote_ref" in
+    refs/heads/main)
+      if [ "$remote_sha" != "0000000000000000000000000000000000000000" ] &&
+         ! git merge-base --is-ancestor "$remote_sha" "$local_sha"; then
+        echo "REJECTED: force/non-fast-forward push to main" >&2
+        exit 1
+      fi
+      ;;
+    refs/heads/*)
+      echo "REJECTED: Trunk-Based Development permits only origin/main" >&2
+      exit 1
+      ;;
+    refs/tags/v*)
+      # Release tags require a separate signed-release validation path.
+      ;;
+    *)
+      echo "REJECTED: unsupported remote ref $remote_ref" >&2
+      exit 1
+      ;;
+  esac
+done
