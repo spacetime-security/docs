@@ -310,6 +310,7 @@ def verify(repo: Path, lease: dict[str, Any], *, run_tests: bool = True) -> tupl
         run_gates(repo, record["focused_tests"], "focused test")
         run_gates(repo, record["broader_tests"], "broader test")
     run(["git", "diff", "--check", lease["base"], "HEAD"], cwd=repo)
+    run(["git", "diff", "--check"], cwd=repo)
     head = git(repo, "rev-parse", "HEAD")
     if git(repo, "rev-list", "--count", f'{lease["base"]}..{head}') != "1":
         raise UowError("candidate must be exactly one commit after recorded base")
@@ -363,6 +364,8 @@ def finish(repo: Path) -> None:
             raise UowError("main is neither the recorded base nor the leased candidate")
         git(repo, "switch", lease["branch"])
     manifest, record = verify(repo, lease)
+    if git(repo, "ls-files", "--others", "--exclude-standard"):
+        raise UowError("finish requires all declared evidence to be tracked in the candidate commit")
     candidate = git(repo, "rev-parse", "HEAD")
     git(repo, "switch", "main")
     git(repo, "fetch", "--prune", "origin")
