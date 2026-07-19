@@ -58,6 +58,9 @@ def common_git_dir(repo: Path) -> Path:
 def lease_path(repo: Path) -> Path:
     return common_git_dir(repo) / "spacetime-uow.json"
 
+def admission_path(repo: Path) -> Path:
+    return common_git_dir(repo) / "spacetime-uow-admission.json"
+
 
 def read_json(path: Path) -> dict[str, Any]:
     try:
@@ -96,8 +99,8 @@ def local_branches(repo: Path) -> list[str]:
 
 
 def tracking_branches(repo: Path) -> list[str]:
-    refs = git(repo, "for-each-ref", "--format=%(refname:short)", "refs/remotes/origin")
-    return sorted(ref for ref in refs.splitlines() if ref and ref != "origin/HEAD")
+    refs = git(repo, "for-each-ref", "--format=%(refname)", "refs/remotes/origin")
+    return sorted(ref.removeprefix("refs/remotes/") for ref in refs.splitlines() if ref)
 
 
 def remote_heads(repo: Path) -> dict[str, str]:
@@ -179,12 +182,12 @@ def jira_status(jira: str) -> str:
 
 
 def jira_finish(jira: str, comment: str) -> None:
-    if jira_status(jira).lower() == "done":
-        return
     adf = {"type": "doc", "version": 1, "content": [
         {"type": "paragraph", "content": [{"type": "text", "text": comment}]}
     ]}
     jira_request("POST", f"/rest/api/3/issue/{jira}/comment", {"body": adf})
+    if jira_status(jira).lower() == "done":
+        return
     transitions = jira_request("GET", f"/rest/api/3/issue/{jira}/transitions")
     done = next((item for item in transitions.get("transitions", [])
                  if item.get("to", {}).get("statusCategory", {}).get("key") == "done"), None)
@@ -209,6 +212,14 @@ def manifest_candidates(repo: Path, jira: str) -> list[Path]:
 
 
 def validate_manifest(repo: Path, path: Path, jira: str, *, start: bool) -> dict[str, Any]:
+    validator = repo / "docs" / "goals" / "validate_goal_manifest.py"
+    schema = repo / "docs" / "goals" / "schema.json"
+    if not validator.is_file() or not schema.is_file():
+        raise UowError("canonical goal-manifest validator and schema are required")
+    result = run([sys.executable, str(validator), str(path), "--schema", str(schema)],
+                 cwd=repo, check=False)
+    if result.returncode:
+        raise UowError(f"goal manifest validation failed: {(result.stdout or result.stderr).strip()}")
     data = read_json(path)
     missing = REQUIRED_MANIFEST_FIELDS - set(data)
     if missing:
@@ -219,9 +230,6 @@ def validate_manifest(repo: Path, path: Path, jira: str, *, start: bool) -> dict
         raise UowError("manifest Jira identity mismatch")
     if Path(data.get("repository", "")).resolve() != repo:
         raise UowError("manifest repository identity mismatch")
-    if start:
-        if data.get("branch") != "main" or data.get("head") != git(repo, "rev-parse", "HEAD"):
-            raise UowError("start manifest must bind current main and HEAD")
     units = data.get("plan", {}).get("units_of_work", [])
     if not isinstance(units, list) or not units:
         raise UowError("manifest must declare at least one unit of work")
@@ -271,22 +279,35 @@ def run_gates(repo: Path, commands: list[str], label: str) -> None:
             raise UowError(f"{label} failed ({result.returncode}): {command}")
 
 
-def require_admission(manifest: dict[str, Any], jira: str) -> None:
-    for item in manifest.get("evidence", []):
-        if not isinstance(item, dict):
-            continue
-        if item.get("jira") != jira:
-            continue
-        if item.get("kind") != "independent_admission":
-            continue
-        if str(item.get("result", "")).upper() not in PASS:
-            continue
-        if str(item.get("disposition", "")).upper() not in ADMITTED:
-            continue
-        if not item.get("coordinator_task_identity") or not item.get("recorded_at"):
-            continue
-        return
-    raise UowError("independent candidate admission is not recorded")
+def require_admission(repo: Path, lease: dict[str, Any], head: str) -> None:
+    path = admission_path(repo)
+    if not path.is_file():
+        raise UowError(f"independent admission record is missing: {path}")
+    record = read_json(path)
+    expected = {
+        "jira": lease["jira"],
+        "branch": lease["branch"],
+        "base": lease["base"],
+        "head": head,
+        "tree": git(repo, "rev-parse", f"{head}^{{tree}}"),
+        "goal_manifest": lease["goal_manifest"],
+        "result": "PASS",
+        "disposition": "CANDIDATE_ADMITTED",
+    }
+    for key, value in expected.items():
+        if record.get(key) != value:
+            raise UowError(f"independent admission {key} does not match the lease/candidate")
+    if set(record) != set(expected) | {"coordinator_task_identity", "recorded_at"}:
+        raise UowError("independent admission record has an unexpected shape")
+    if not record.get("coordinator_task_identity"):
+        raise UowError("independent admission coordinator identity is missing")
+    try:
+        started = dt.datetime.fromisoformat(lease["started_at"].replace("Z", "+00:00"))
+        recorded = dt.datetime.fromisoformat(record["recorded_at"].replace("Z", "+00:00"))
+    except (TypeError, ValueError) as exc:
+        raise UowError("invalid lease/admission timestamp") from exc
+    if recorded <= started:
+        raise UowError("independent admission predates the active UOW")
 
 
 def verify(repo: Path, lease: dict[str, Any], *, run_tests: bool = True) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -319,7 +340,9 @@ def verify(repo: Path, lease: dict[str, Any], *, run_tests: bool = True) -> tupl
     subject = git(repo, "show", "-s", "--format=%s", head)
     if not subject.startswith(f"{jira}:"):
         raise UowError(f"commit subject must begin {jira}:")
-    require_admission(manifest, jira)
+    if git(repo, "diff", "--name-only") or git(repo, "diff", "--cached", "--name-only"):
+        raise UowError("tracked staged/unstaged changes are not permitted")
+    require_admission(repo, lease, head)
     print(f"VERIFIED {jira} {head}")
     return manifest, record
 
@@ -330,6 +353,10 @@ def start(repo: Path, jira: str, manifest_arg: str | None) -> None:
     git(repo, "fetch", "--prune", "origin")
     require_main_topology(repo)
     require_jira_current_sprint(jira)
+    if jira_status(jira).lower() == "done":
+        raise UowError(f"{jira} is already Done")
+    if admission_path(repo).exists():
+        raise UowError(f"stale UOW admission record exists: {admission_path(repo)}")
     candidates = [Path(manifest_arg).resolve()] if manifest_arg else manifest_candidates(repo, jira)
     if len(candidates) != 1:
         raise UowError(f"expected exactly one goal manifest for {jira}, got {len(candidates)}")
@@ -381,6 +408,8 @@ def finish(repo: Path) -> None:
     else:
         raise UowError("main is neither the recorded base nor the candidate")
     run_gates(repo, record["integrated_gates"], "integrated-result gate")
+    if not clean(repo):
+        raise UowError("integrated-result gates left the working tree dirty")
     if git(repo, "rev-parse", "origin/main") != candidate:
         git(repo, "push", "origin")
     git(repo, "fetch", "--prune", "origin")
@@ -390,11 +419,12 @@ def finish(repo: Path) -> None:
         raise UowError("post-push main SHA proof failed")
     jira_finish(jira, f"{jira} completed on main at {main}. Candidate {candidate}. "
                        "Focused, broader, diff, admission, integration, push, and SHA gates passed.")
+    if jira_status(jira).lower() != "done":
+        raise UowError(f"{jira} did not read back as Done")
     git(repo, "branch", "-d", lease["branch"])
+    admission_path(repo).unlink()
     lease_path(repo).unlink()
     require_main_topology(repo)
-    if jira_status(jira).lower() != "done":
-        raise UowError(f"{jira} final status is not Done")
     print(f"FINISHED {jira} {main}")
 
 
