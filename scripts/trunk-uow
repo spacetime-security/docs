@@ -201,7 +201,9 @@ def jira_finish(jira: str, comment: str) -> None:
 
 def manifest_candidates(repo: Path, jira: str) -> list[Path]:
     matches: list[Path] = []
-    for path in repo.glob("docs/verification/**/goal-manifest.yaml"):
+    paths = list(repo.glob("docs/verification/**/goal-manifest.yaml"))
+    paths.extend((common_git_dir(repo) / "spacetime-goals").glob("**/goal-manifest.yaml"))
+    for path in paths:
         try:
             data = read_json(path)
         except UowError:
@@ -216,7 +218,10 @@ def validate_manifest(repo: Path, path: Path, jira: str, *, start: bool) -> dict
     schema = repo / "docs" / "goals" / "schema.json"
     if not validator.is_file() or not schema.is_file():
         raise UowError("canonical goal-manifest validator and schema are required")
-    result = run([sys.executable, str(validator), str(path), "--schema", str(schema)],
+    command = [sys.executable, str(validator), str(path), "--schema", str(schema)]
+    if start:
+        command.extend(["--repo", str(repo)])
+    result = run(command,
                  cwd=repo, check=False)
     if result.returncode:
         raise UowError(f"goal manifest validation failed: {(result.stdout or result.stderr).strip()}")

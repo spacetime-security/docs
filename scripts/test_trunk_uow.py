@@ -111,6 +111,13 @@ class TrunkUowTests(unittest.TestCase):
                 MODULE.require_main_topology(repo)
             self.git(repo, "config", "remote.origin.followRemoteHEAD", "never")
             self.git(repo, "remote", "set-head", "origin", "-d")
+            with self.assertRaises(MODULE.UowError):
+                MODULE.validate_manifest(repo, manifest_path, "SCRUM-9999", start=True)
+            manifest["head"] = self.git(repo, "rev-parse", "HEAD")
+            manifest_path = (repo / ".git" / "spacetime-goals" / "SCRUM-9999" /
+                             "goal-manifest.yaml")
+            manifest_path.parent.mkdir(parents=True)
+            manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
             old_current = MODULE.require_jira_current_sprint
             old_status = MODULE.jira_status
             old_finish = MODULE.jira_finish
