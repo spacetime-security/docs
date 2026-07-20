@@ -38,7 +38,8 @@ class TrunkUowTests(unittest.TestCase):
             }
             MODULE.write_lease(path, lease)
             self.assertEqual(json.loads(path.read_text()), lease)
-            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            if os.name != "nt":
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
             with self.assertRaises(MODULE.UowError):
                 MODULE.write_lease(path, lease)
 

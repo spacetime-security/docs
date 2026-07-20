@@ -117,12 +117,15 @@ def validate(path, repo=None, schema_path=SCHEMA_PATH):
     if repo and isinstance(data, dict):
         try:
             identities = {
-                "repository": git(repo, "rev-parse", "--show-toplevel"),
+                "repository": str(Path(git(repo, "rev-parse", "--show-toplevel")).resolve()),
                 "branch": git(repo, "branch", "--show-current"),
                 "head": git(repo, "rev-parse", "HEAD"),
             }
             for key, expected in identities.items():
-                if data.get(key) != expected:
+                actual = data.get(key)
+                if key == "repository" and isinstance(actual, str):
+                    actual = str(Path(actual).resolve())
+                if actual != expected:
                     errors.append(f"{key if key != 'head' else 'HEAD'} mismatch")
         except (OSError, subprocess.CalledProcessError) as exc:
             errors.append(f"identity check failed: {exc}")
