@@ -4,6 +4,18 @@
 
 # Documentation project instructions
 
+## Jira access order
+
+For all Jira ticket operations, use this mandatory fallback order:
+
+1. First, use the Jira API.
+2. If the Jira API fails, use CDP access to Jira.
+3. If CDP access fails, control Jonathan's Mac and use Chrome to manage the tickets.
+
+Use authenticated, authorized access at each step. Preserve the task's scope,
+Jira acceptance criteria, evidence requirements, and readback checks across fallbacks.
+Never expose credentials or bypass authentication or security controls.
+
 ## About this project
 
 - This is a documentation site built on [Mintlify](https://mintlify.com)
